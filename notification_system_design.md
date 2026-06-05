@@ -515,4 +515,202 @@ Notification Service
 WebSocket Server
   ↓
 Students
+# Stage 3
+
+## Analysis of Existing Query
+
+### Existing Query
+
+```sql
+SELECT *
+FROM notifications
+WHERE studentID = 1042
+AND isRead = false
+ORDER BY createdAt DESC;
 ```
+
+---
+
+## Is the Query Accurate?
+
+The query is logically correct because it retrieves all unread notifications for a specific student and sorts them by creation time in descending order.
+
+However, with a database containing approximately 50,000 students and 5,000,000 notifications, the query may become slow if proper indexing is not implemented.
+
+---
+
+## Why is the Query Slow?
+
+### 1. Large Dataset
+
+The notifications table contains millions of rows. Without suitable indexes, the database engine must scan a large portion of the table to locate matching records.
+
+### 2. Filtering on Multiple Columns
+
+The query filters using:
+
+* studentID
+* isRead
+
+If indexes do not exist on these columns, the database performs expensive scans.
+
+### 3. Sorting Cost
+
+The query also performs:
+
+```sql
+ORDER BY createdAt DESC
+```
+
+Sorting a large result set requires additional CPU and memory resources.
+
+### 4. SELECT *
+
+Using SELECT * retrieves all columns even when only a few fields may be required by the application. This increases I/O overhead.
+
+---
+
+## Recommended Improvements
+
+### Optimized Query
+
+```sql
+SELECT id,
+       title,
+       message,
+       createdAt
+FROM notifications
+WHERE studentID = 1042
+AND isRead = false
+ORDER BY createdAt DESC;
+```
+
+This reduces the amount of data transferred from the database.
+
+---
+
+## Recommended Index
+
+A composite index should be created on the columns used for filtering and sorting.
+
+```sql
+CREATE INDEX idx_notifications_student_read_created
+ON notifications(studentID, isRead, createdAt DESC);
+```
+
+### Why This Index?
+
+The index supports:
+
+1. Filtering by studentID
+2. Filtering by isRead
+3. Returning rows already ordered by createdAt
+
+This significantly reduces scanning and sorting costs.
+
+---
+
+## Likely Computational Cost
+
+### Without Index
+
+The database may perform a full table scan.
+
+Approximate complexity:
+
+```text
+O(N)
+```
+
+where N is the number of rows in the notifications table.
+
+For 5,000,000 rows this is expensive.
+
+---
+
+### With Composite Index
+
+The database can directly locate matching records.
+
+Approximate complexity:
+
+```text
+O(log N)
+```
+
+for index lookup, followed by retrieval of matching rows.
+
+This provides a substantial performance improvement.
+
+---
+
+## Should We Add Indexes on Every Column?
+
+No.
+
+Adding indexes on every column is generally not recommended.
+
+### Disadvantages
+
+1. Increased storage usage
+2. Slower INSERT operations
+3. Slower UPDATE operations
+4. Slower DELETE operations
+5. Higher maintenance overhead
+
+Indexes should only be created for:
+
+* Frequently filtered columns
+* Join columns
+* Sorting columns
+* Columns used in search operations
+
+Indexing every column often hurts overall database performance.
+
+---
+
+## Query to Find Students Who Received Placement Notifications in the Last 7 Days
+
+Assuming notificationType contains values:
+
+* Event
+* Result
+* Placement
+
+The following query returns all students who received placement notifications during the last seven days.
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE notificationType = 'Placement'
+AND createdAt >= NOW() - INTERVAL '7 days';
+```
+
+---
+
+## Additional Scaling Recommendations
+
+As notification volume continues to grow:
+
+### Table Partitioning
+
+Partition notifications by month or year to reduce scan size.
+
+### Read Replicas
+
+Use database replicas for read-heavy workloads.
+
+### Redis Caching
+
+Store unread counts and frequently accessed notification data in Redis.
+
+### Message Queue
+
+Use Kafka or RabbitMQ to decouple notification creation from delivery and improve scalability.
+
+---
+
+## Conclusion
+
+The original query is functionally correct but inefficient for a dataset containing millions of notifications. A composite index on studentID, isRead, and createdAt, combined with selecting only required columns, significantly improves performance. Creating indexes on every column is not recommended because it increases storage and write costs without proportional benefits.
+
