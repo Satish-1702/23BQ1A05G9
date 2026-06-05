@@ -713,4 +713,304 @@ Use Kafka or RabbitMQ to decouple notification creation from delivery and improv
 ## Conclusion
 
 The original query is functionally correct but inefficient for a dataset containing millions of notifications. A composite index on studentID, isRead, and createdAt, combined with selecting only required columns, significantly improves performance. Creating indexes on every column is not recommended because it increases storage and write costs without proportional benefits.
+# Stage 4
+
+## Problem Statement
+
+Currently, notifications are fetched from the database every time a student loads a page. As the number of users and notifications grows, the database receives a very high volume of repeated read requests, leading to increased latency and poor user experience.
+
+---
+
+## Proposed Solutions
+
+### 1. Redis Caching
+
+Store frequently accessed notification data and unread counts in Redis.
+
+#### Flow
+
+```text
+Student Request
+      ↓
+Redis Cache
+      ↓
+Cache Hit → Return Data
+      ↓
+Cache Miss → Database → Update Cache
+```
+
+#### Advantages
+
+* Extremely fast response times
+* Reduces database load
+* Improves user experience
+
+#### Tradeoffs
+
+* Additional infrastructure
+* Cache invalidation complexity
+* Slight risk of stale data
+
+---
+
+### 2. Pagination
+
+Instead of loading all notifications, return only a limited number per request.
+
+#### Example
+
+```http
+GET /api/v1/notifications?page=1&limit=20
+```
+
+#### Advantages
+
+* Reduced database workload
+* Lower network traffic
+* Faster response times
+
+#### Tradeoffs
+
+* Additional pagination logic
+* Multiple requests required for older notifications
+
+---
+
+### 3. Read Replicas
+
+Use database replicas for read operations while keeping writes on the primary database.
+
+#### Architecture
+
+```text
+Primary Database
+       |
+       ├── Read Replica 1
+       ├── Read Replica 2
+       └── Read Replica 3
+```
+
+#### Advantages
+
+* Scales read-heavy workloads
+* Improves system throughput
+
+#### Tradeoffs
+
+* Increased infrastructure cost
+* Replication lag may occur
+
+---
+
+### 4. Real-Time Notifications via WebSockets
+
+Instead of fetching notifications on every page refresh, push notifications to connected users.
+
+#### Flow
+
+```text
+Notification Created
+        ↓
+WebSocket Server
+        ↓
+Connected Students
+```
+
+#### Advantages
+
+* Instant delivery
+* Eliminates unnecessary polling
+* Reduces database queries
+
+#### Tradeoffs
+
+* Persistent connections required
+* More complex server management
+
+---
+
+### 5. Background Synchronization
+
+Load notifications once and periodically refresh in the background.
+
+#### Advantages
+
+* Reduced page load time
+* Better user experience
+
+#### Tradeoffs
+
+* Data may be slightly delayed
+
+---
+
+## Recommended Approach
+
+A combination of:
+
+* Redis Cache
+* Pagination
+* WebSocket Push Notifications
+* Read Replicas
+
+provides the best balance between performance, scalability, and reliability.
+
+---
+
+# Stage 5
+
+## Problems with Current Implementation
+
+### Existing Pseudocode
+
+```text
+for student_id in student_ids:
+    send_email(student_id, message)
+    save_to_db(student_id, message)
+    push_to_app(student_id, message)
+```
+
+---
+
+### Problem 1: Sequential Processing
+
+Each operation executes one student at a time.
+
+For 50,000 students:
+
+```text
+50,000 Emails
+50,000 DB Writes
+50,000 Push Operations
+```
+
+This is very slow.
+
+---
+
+### Problem 2: Failure Handling
+
+Logs indicate that email delivery failed for 200 students.
+
+The current implementation provides:
+
+* No retry mechanism
+* No tracking of failed deliveries
+* No recovery process
+
+As a result, some students may never receive notifications.
+
+---
+
+### Problem 3: Tight Coupling
+
+Email delivery, database storage, and app notifications are executed together.
+
+A failure in one operation can affect the entire workflow.
+
+---
+
+### Should Saving to DB and Sending Email Happen Together?
+
+No.
+
+The database should be treated as the source of truth.
+
+Notification creation should succeed even if email delivery temporarily fails.
+
+Email delivery should occur asynchronously.
+
+---
+
+## Recommended Architecture
+
+### Flow
+
+```text
+HR Clicks Notify All
+        ↓
+Create Notification Record
+        ↓
+Save To Database
+        ↓
+Publish Event To Queue
+        ↓
+ ┌───────────────┬───────────────┐
+ │               │               │
+Email Worker  Push Worker   Analytics Worker
+ │               │
+Send Email    Push To App
+```
+
+---
+
+## Advantages
+
+* Fast response to HR
+* Reliable delivery
+* Retry capability
+* Independent scaling of workers
+* Failure isolation
+
+---
+
+## Failure Recovery
+
+If email delivery fails:
+
+1. Store failed event in queue
+2. Retry automatically
+3. Move permanently failed messages to Dead Letter Queue (DLQ)
+4. Generate monitoring alerts
+
+---
+
+## Revised Pseudocode
+
+```text
+function notify_all(student_ids, message):
+
+    notification_id = save_notification(message)
+
+    publish_to_queue(
+        event = "NOTIFICATION_CREATED",
+        notification_id = notification_id,
+        student_ids = student_ids
+    )
+
+    return "Notification Accepted"
+
+
+EmailWorker():
+
+    while true:
+
+        event = consume_queue()
+
+        for student_id in event.student_ids:
+
+            try:
+                send_email(student_id, event.message)
+
+            except Exception:
+
+                retry_or_move_to_dlq(event)
+
+
+PushWorker():
+
+    while true:
+
+        event = consume_queue()
+
+        for student_id in event.student_ids:
+
+            push_to_app(student_id, event.message)
+```
+
+---
+
+## Conclusion
+
+The original design is slow, difficult to scale, and vulnerable to partial failures. Using asynchronous processing with a message queue (Kafka or RabbitMQ), background workers, retries, and dead-letter queues provides a reliable and scalable solution capable of handling notifications for tens of thousands of students.
 
